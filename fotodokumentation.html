@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#003b73">
+    <title>Fotodokumentation</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="config.js"></script>
+</head>
+<body>
+
+<!-- Header -->
+<header class="app-header">
+    <div class="header-inner">
+        <button class="btn-back" onclick="location.href='index.html'" aria-label="Zurück">
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <span class="header-title">Fotodokumentation</span>
+    </div>
+</header>
+
+<!-- Main Content -->
+<main class="main-content">
+
+    <!-- Kopfdaten -->
+    <div class="card">
+        <div class="card-title">Kopfdaten</div>
+        <div class="form-group">
+            <label class="form-label" for="aufnahmedatum">Aufnahmedatum</label>
+            <input type="date" id="aufnahmedatum" class="form-input">
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label class="form-label" for="keller">Keller</label>
+                <input type="text" id="keller" class="form-input" list="keller-list" placeholder="z.B. UG1">
+                <datalist id="keller-list"></datalist>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="bauteil">Bauteil</label>
+                <input type="text" id="bauteil" class="form-input" list="bauteil-list" placeholder="z.B. Decke">
+                <datalist id="bauteil-list"></datalist>
+            </div>
+        </div>
+    </div>
+
+    <!-- Einträge -->
+    <div id="entries-container"></div>
+
+</main>
+
+<!-- Bottom Action Bar -->
+<div class="bottom-bar">
+    <button class="btn btn-secondary" onclick="addEntry()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Foto
+    </button>
+    <button class="btn btn-primary" onclick="generatePDF()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        PDF erstellen
+    </button>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+const STORAGE_KEYS = {
+    keller: 'fd_keller',
+    bauteil: 'fd_bauteil'
+};
+
+const STATUS_OPTIONS = [
+    { value: '', label: '-- Auswählen --', color: 'gray' },
+    { value: 'gegeben', label: 'Gegeben', color: 'green' },
+    { value: 'eingeschraenkt', label: 'Eingeschränkt', color: 'yellow' },
+    { value: 'mangelhaft', label: 'Mangelhaft / zu prüfen', color: 'red' },
+    { value: 'irrelevant', label: 'Hier nicht relevant', color: 'gray' }
+];
+
+let entries = [];
+let mediaRecorder = null;
+let audioChunks = [];
+
+// ============================================================
+// Init
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('aufnahmedatum').valueAsDate = new Date();
+    populateDatalist('keller-list', STORAGE_KEYS.keller);
+    populateDatalist('bauteil-list', STORAGE_KEYS.bauteil);
+    addEntry();
+});
+
+// ============================================================
+// LocalStorage Autocomplete
+// ============================================================
+function getStoredValues(key) {
+    try { return JSON.parse(localStorage.getItem(key)) || []; }
+    catch { return []; }
+}
+
+function addStoredValue(key, value) {
+    if (!value || !value.trim()) return;
+    const values = getStoredValues(key);
+    const trimmed = value.trim();
+    if (!values.includes(trimmed)) {
+        values.unshift(trimmed);
+        if (values.length > 20) values.pop();
+        localStorage.setItem(key, JSON.stringify(values));
+    }
+}
+
+function populateDatalist(datalistId, storageKey) {
+    const dl = document.getElementById(datalistId);
+    if (!dl) return;
+    dl.innerHTML = '';
+    getStoredValues(storageKey).forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        dl.appendChild(opt);
+    });
+}
+
+// ============================================================
+// Entry Management
+// ============================================================
+function addEntry() {
+    entries.push({ images: [], text: '', standsicherheit: '', dauerhaftigkeit: '' });
+    renderEntries();
+    setTimeout(() => {
+        const cards = document.querySelectorAll('.entry-card');
+        if (cards.length) cards[cards.length - 1].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 100);
+}
+
+function removeEntry(index) {
+    entries.splice(index, 1);
+    renderEntries();
+}
+
+function buildSelectHTML(name, entryIndex, field) {
+    const currentValue = entries[entryIndex][field];
+    const currentOpt = STATUS_OPTIONS.find(o => o.value === currentValue) || STATUS_OPTIONS[0];
+    let options = STATUS_OPTIONS.map(o =>
+        `<option value="${o.value}" ${o.value === currentValue ? 'selected' : ''}>${o.label}</option>`
+    ).join('');
+    return `
+        <div class="form-group">
+            <label class="form-label">${name}</label>
+            <div class="status-row">
+                <span class="status-dot ${currentOpt.color}" id="dot-${field}-${entryIndex}"></span>
+                <select class="form-select" onchange="updateStatus(${entryIndex}, '${field}', this.value)">
+                    ${options}
+                </select>
+            </div>
+        </div>
+    `;
+}
+
+function updateStatus(entryIndex, field, value) {
+    entries[entryIndex][field] = value;
+    const opt = STATUS_OPTIONS.find(o => o.value === value) || STATUS_OPTIONS[0];
+    const dot = document.getElementById(`dot-${field}-${entryIndex}`);
+    if (dot) {
+        dot.className = 'status-dot ' + opt.color;
+    }
+}
+
+function renderEntries() {
+    const container = document.getElementById('entries-container');
+    container.innerHTML = '';
+
+    entries.forEach((entry, i) => {
+        const card = document.createElement('div');
+        card.className = 'entry-card';
+        card.innerHTML = `
+            <div class="entry-header">
+                <span class="entry-number">Foto ${i + 1}</span>
+                <button class="btn-remove-entry" onclick="removeEntry(${i})">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    Entfernen
+                </button>
+            </div>
+            <div class="entry-body">
+                <div class="image-upload-area">
+                    <div class="image-grid" id="img-grid-${i}"></div>
+                    <label class="btn-add-image">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                        Foto aufnehmen / auswählen
+                        <input type="file" accept="image/*" multiple onchange="handleImageUpload(${i}, this.files)">
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Beschreibung</label>
+                    <div class="textarea-wrapper">
+                        <textarea class="form-textarea" placeholder="Beschreibung eingeben..." oninput="entries[${i}].text = this.value" id="textarea-${i}">${entry.text}</textarea>
+                        <button class="btn-mic" onclick="toggleSpeech(${i}, this)" title="Spracheingabe" aria-label="Spracheingabe">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-row">
+                    ${buildSelectHTML('Standsicherheit', i, 'standsicherheit')}
+                    ${buildSelectHTML('Dauerhaftigkeit', i, 'dauerhaftigkeit')}
+                </div>
+            </div>
+        `;
+        container.appendChild(card);
+        renderImageGrid(i);
+    });
+}
+
+// ============================================================
+// Image Handling
+// ============================================================
+function handleImageUpload(entryIndex, files) {
+    Array.from(files).forEach(file => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            compressImage(e.target.result, (compressed) => {
+                entries[entryIndex].images.push({ src: compressed, rotation: 0 });
+                renderImageGrid(entryIndex);
+            });
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+function compressImage(dataUrl, callback) {
+    const img = new Image();
+    img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_W = 1024, MAX_H = 768;
+        let w = img.width, h = img.height;
+        if (w > MAX_W || h > MAX_H) {
+            const ratio = Math.min(MAX_W / w, MAX_H / h);
+            w = Math.round(w * ratio);
+            h = Math.round(h * ratio);
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        callback(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.src = dataUrl;
+}
+
+function renderImageGrid(entryIndex) {
+    const grid = document.getElementById(`img-grid-${entryIndex}`);
+    if (!grid) return;
+    grid.innerHTML = '';
+    entries[entryIndex].images.forEach((imgObj, imgIdx) => {
+        const item = document.createElement('div');
+        item.className = 'image-item';
+        item.innerHTML = `
+            <img src="${imgObj.src}" style="transform: rotate(${imgObj.rotation}deg)" alt="Foto ${imgIdx + 1}">
+            <div class="image-actions">
+                <button onclick="rotateImage(${entryIndex}, ${imgIdx})" title="Drehen">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                </button>
+                <button class="btn-img-delete" onclick="removeImage(${entryIndex}, ${imgIdx})" title="Löschen">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+        `;
+        grid.appendChild(item);
+    });
+}
+
+function rotateImage(entryIndex, imgIndex) {
+    entries[entryIndex].images[imgIndex].rotation = (entries[entryIndex].images[imgIndex].rotation + 90) % 360;
+    renderImageGrid(entryIndex);
+}
+
+function removeImage(entryIndex, imgIndex) {
+    entries[entryIndex].images.splice(imgIndex, 1);
+    renderImageGrid(entryIndex);
+}
+
+// ============================================================
+// Speech Recognition (OpenAI Whisper)
+// ============================================================
+async function toggleSpeech(entryIndex, btn) {
+    // If currently recording → stop and transcribe
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        return;
+    }
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = async () => {
+            stream.getTracks().forEach(track => track.stop());
+            btn.classList.remove('recording');
+            btn.classList.add('processing');
+
+            try {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const text = await transcribeWithWhisper(audioBlob);
+                const textarea = document.getElementById(`textarea-${entryIndex}`);
+                textarea.value += (textarea.value ? ' ' : '') + text;
+                entries[entryIndex].text = textarea.value;
+            } catch (err) {
+                showToast('Transkription fehlgeschlagen: ' + err.message);
+            }
+
+            btn.classList.remove('processing');
+            mediaRecorder = null;
+        };
+
+        mediaRecorder.start();
+        btn.classList.add('recording');
+        showToast('Aufnahme läuft... Nochmal tippen zum Stoppen.');
+    } catch (err) {
+        showToast('Mikrofonzugriff verweigert.');
+    }
+}
+
+async function transcribeWithWhisper(audioBlob) {
+    const formData = new FormData();
+    formData.append('file', audioBlob, 'recording.webm');
+    formData.append('model', 'whisper-1');
+    formData.append('language', 'de');
+
+    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${WHISPER_API_KEY}` },
+        body: formData
+    });
+
+    if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`API ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.text;
+}
+
+// ============================================================
+// PDF Generation
+// ============================================================
+async function generatePDF() {
+  try {
+    const validEntries = entries.filter(e => e.text.trim() || e.images.length > 0);
+    if (validEntries.length === 0) {
+        showToast('Keine Einträge zum Exportieren vorhanden.');
+        return;
+    }
+
+    addStoredValue(STORAGE_KEYS.keller, document.getElementById('keller').value);
+    addStoredValue(STORAGE_KEYS.bauteil, document.getElementById('bauteil').value);
+    showToast('PDF wird erstellt...');
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF('p', 'mm', 'a4');
+    const pageW = 210, pageH = 297;
+    const mL = 18, mR = 18;
+    const colDivX = 52;
+    const themaX = colDivX + 3;
+    const themaW = pageW - mR - themaX;
+    let y = 0;
+    let pageNum = 1;
+    let tableTopY = 0;
+
+    const datum = formatGermanDate(document.getElementById('aufnahmedatum').value);
+    const keller = document.getElementById('keller').value || '';
+    const bauteil = document.getElementById('bauteil').value || '';
+
+    let logoInfo = null;
+    try { logoInfo = await loadImageAsDataUrl('logo.png'); } catch(e) {}
+
+    function getStatusLabel(value) {
+        const opt = STATUS_OPTIONS.find(o => o.value === value);
+        return opt ? opt.label : '-';
+    }
+    function getStatusColor(value) {
+        const opt = STATUS_OPTIONS.find(o => o.value === value);
+        if (!opt) return [180, 180, 180];
+        switch (opt.color) {
+            case 'green': return [34, 197, 94];
+            case 'yellow': return [245, 158, 11];
+            case 'red': return [239, 68, 68];
+            default: return [180, 180, 180];
+        }
+    }
+
+    function drawPageHeader() {
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(0, 0, 0);
+        let hy = 17;
+        doc.text('Aufnahmedatum: ' + datum, mL, hy); hy += 5;
+        doc.text('Keller: ' + keller, mL, hy); hy += 5;
+        doc.text('Bauteil: ' + bauteil, mL, hy);
+
+        if (logoInfo) {
+            try {
+                const logoMaxW = 82;
+                const aspect = logoInfo.width / logoInfo.height;
+                const logoW = logoMaxW;
+                const logoH = logoW / aspect;
+                doc.addImage(logoInfo.dataUrl, 'PNG', pageW - mR - logoW, 12, logoW, logoH);
+            } catch(e) {}
+        }
+        y = 40;
+    }
+
+    function drawTableHeader() {
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(0, 0, 0);
+        doc.text('Lfd. Nr.', mL + 2, y + 4);
+        doc.text('Thema', themaX, y + 4);
+        y += 7;
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.3);
+        doc.line(mL, y, pageW - mR, y);
+        tableTopY = y;
+        y += 3;
+    }
+
+    function drawVerticalLine() {
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.3);
+        doc.line(colDivX, tableTopY, colDivX, y);
+    }
+
+    function drawPageFooter() {
+        doc.setFillColor(0, 59, 115);
+        doc.rect(mL, pageH - 18, 3, 3, 'F');
+        doc.setDrawColor(0, 59, 115);
+        doc.setLineWidth(0.4);
+        for (let dx = mL + 5; dx < pageW - mR; dx += 1.5) {
+            doc.line(dx, pageH - 16.5, dx + 0.7, pageH - 16.5);
+        }
+        doc.setFontSize(6.5);
+        doc.setTextColor(0, 0, 0);
+        doc.setFont('helvetica', 'bold');
+        const companyBold = 'Ingenieurbüro Wilfling & Schraufstetter ';
+        doc.text(companyBold, mL, pageH - 11);
+        const bw = doc.getTextWidth(companyBold);
+        doc.setFont('helvetica', 'normal');
+        doc.text('PartG mbB | Nussbaumstr. 42 | 91301 Forchheim | Tel. 09191 / 73 66 8-0 | www.bauingenieure.ws', mL + bw, pageH - 11);
+        doc.setDrawColor(0, 0, 0);
+    }
+
+    function checkSpace(needed) {
+        if (y + needed > pageH - 28) {
+            drawVerticalLine();
+            drawPageFooter();
+            doc.addPage();
+            pageNum++;
+            drawPageHeader();
+            drawTableHeader();
+        }
+    }
+
+    function hLine() {
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.3);
+        doc.line(mL, y, pageW - mR, y);
+    }
+
+    drawPageHeader();
+    drawTableHeader();
+
+    for (let i = 0; i < validEntries.length; i++) {
+        const entry = validEntries[i];
+        checkSpace(40);
+
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(0, 0, 0);
+        doc.text(String(i + 1), mL + 2, y + 5);
+
+        // Images
+        if (entry.images.length > 0) {
+            for (let j = 0; j < entry.images.length; j++) {
+                checkSpace(65);
+                try {
+                    const processed = await processImageForPDF(entry.images[j]);
+                    const imgW = Math.min(themaW - 5, 105);
+                    const imgH = imgW * 0.7;
+                    doc.addImage(processed, 'JPEG', themaX, y, imgW, imgH);
+                    y += imgH + 3;
+                } catch(e) {}
+            }
+        }
+
+        // Description
+        if (entry.text.trim()) {
+            checkSpace(8);
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'normal');
+            const lines = doc.splitTextToSize(entry.text, themaW - 5);
+            lines.forEach(line => {
+                checkSpace(5);
+                doc.text(line, themaX, y + 4);
+                y += 5;
+            });
+        }
+
+        y += 3;
+        hLine();
+        y += 2;
+
+        // Standsicherheit + Dauerhaftigkeit row
+        checkSpace(12);
+        const drawStatus = (label, value, xPos) => {
+            const color = getStatusColor(value);
+            doc.setFillColor(color[0], color[1], color[2]);
+            doc.circle(xPos + 2, y + 1.5, 2, 'F');
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(80, 80, 80);
+            doc.text(label + ':', xPos + 6, y + 3);
+            const lw = doc.getTextWidth(label + ': ');
+            doc.setFont('helvetica', 'normal');
+            doc.text(getStatusLabel(value), xPos + 6 + lw, y + 3);
+        };
+        drawStatus('Standsicherheit', entry.standsicherheit, themaX);
+        drawStatus('Dauerhaftigkeit', entry.dauerhaftigkeit, themaX + 65);
+        y += 8;
+
+        hLine();
+        y += 3;
+    }
+
+    drawVerticalLine();
+    drawPageFooter();
+
+    const total = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= total; p++) {
+        doc.setPage(p);
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(0, 0, 0);
+        doc.text('Seite ' + p + ' von ' + total, pageW - mR, pageH - 22, { align: 'right' });
+    }
+
+    const datumFile = datum.replace(/\./g, '-');
+    const filename = 'Fotodokumentation_' + datumFile + '.pdf';
+    doc.save(filename.replace(/\s+/g, '_'));
+    showToast('PDF wurde erstellt!');
+  } catch (err) {
+    console.error('PDF Fehler:', err);
+    showToast('PDF-Fehler: ' + err.message);
+  }
+}
+
+function processImageForPDF(imgObj) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const rot = imgObj.rotation % 360;
+            const swap = rot === 90 || rot === 270;
+            const MAX = 600;
+            let w = img.width, h = img.height;
+            const ratio = Math.min(MAX / w, MAX / h, 1);
+            w = Math.round(w * ratio);
+            h = Math.round(h * ratio);
+            canvas.width = swap ? h : w;
+            canvas.height = swap ? w : h;
+            const ctx = canvas.getContext('2d');
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate((rot * Math.PI) / 180);
+            ctx.drawImage(img, -w / 2, -h / 2, w, h);
+            resolve(canvas.toDataURL('image/jpeg', 0.6));
+        };
+        img.onerror = reject;
+        img.src = imgObj.src;
+    });
+}
+
+function loadImageAsDataUrl(url) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            resolve({ dataUrl: canvas.toDataURL('image/png'), width: img.width, height: img.height });
+        };
+        img.onerror = reject;
+        img.src = url;
+    });
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+function formatGermanDate(isoDate) {
+    if (!isoDate) return '';
+    const [y, m, d] = isoDate.split('-');
+    return `${d}.${m}.${y}`;
+}
+
+function showToast(msg) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2500);
+}
+</script>
+
+</body>
+</html>
