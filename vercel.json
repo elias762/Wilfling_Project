@@ -1,14 +1,5 @@
 {
-    "functions": {
-        "api/transcribe.js": {
-            "maxDuration": 30
-        }
-    },
-    "routes": [
-        {
-            "src": "/api/transcribe",
-            "methods": ["POST", "OPTIONS"],
-            "dest": "/api/transcribe.js"
-        }
-    ]
+    "buildCommand": "",
+    "outputDirectory": ".",
+    "framework": null
 }
