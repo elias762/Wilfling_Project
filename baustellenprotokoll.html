@@ -320,8 +320,9 @@ async function transcribeWithWhisper(audioBlob) {
     const response = await fetch(url, { method: 'POST', headers, body: formData });
 
     if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`API ${response.status}`);
+        let errMsg;
+        try { errMsg = await response.text(); } catch(e) { errMsg = response.statusText; }
+        throw new Error('API ' + response.status + ': ' + errMsg);
     }
 
     const data = await response.json();
