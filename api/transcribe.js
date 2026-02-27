@@ -10,24 +10,36 @@ module.exports = async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
 
     try {
-        // Read raw body from request
+        // Read raw audio from request body
         const chunks = [];
-        for await (const chunk of req) {
-            chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        if (req.body) {
+            // Vercel already parsed the body
+            chunks.push(Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body));
+        } else {
+            for await (const chunk of req) {
+                chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+            }
         }
-        const body = Buffer.concat(chunks);
+        const audioBuffer = Buffer.concat(chunks);
+
+        if (audioBuffer.length === 0) {
+            return res.status(400).json({ error: 'Empty audio body' });
+        }
+
+        // Build new FormData for OpenAI (server-side)
+        const blob = new Blob([audioBuffer], { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('file', blob, 'recording.webm');
+        formData.append('model', 'whisper-1');
+        formData.append('language', 'de');
 
         const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
             method: 'POST',
-            headers: {
-                'Authorization': 'Bearer ' + apiKey,
-                'Content-Type': req.headers['content-type'],
-            },
-            body: body,
+            headers: { 'Authorization': 'Bearer ' + apiKey },
+            body: formData,
         });
 
         const text = await response.text();
-
         if (!response.ok) {
             return res.status(response.status).json({ error: text });
         }
